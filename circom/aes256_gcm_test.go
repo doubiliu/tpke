@@ -21,6 +21,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/secp256k1"
 	"github.com/consensys/gnark-crypto/ecc/secp256k1/fp"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/std/math/uints"
 	"github.com/consensys/gnark/test"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/ecies"
@@ -32,11 +33,11 @@ import (
 
 // AES gcm testing
 type GCM256Wrapper struct {
-	Key          [32]frontend.Variable
-	PlainChunks  []frontend.Variable
-	Iv           [12]frontend.Variable `gnark:",public"`
-	ChunkIndex   frontend.Variable     `gnark:",public"`
-	CipherChunks []frontend.Variable   `gnark:",public"`
+	Key          [32]uints.U8
+	PlainChunks  []uints.U8
+	Iv           [12]uints.U8      `gnark:",public"`
+	ChunkIndex   frontend.Variable `gnark:",public"`
+	CipherChunks []uints.U8        `gnark:",public"`
 }
 
 // Define declares the circuit's constraints
@@ -47,13 +48,13 @@ func (circuit *GCM256Wrapper) Define(api frontend.API) error {
 	gcm := NewGCM256(api, &aes)
 
 	// verify aes gcm of chunks
-	gcm.Assert256(circuit.Key, circuit.Iv, circuit.ChunkIndex, circuit.PlainChunks, circuit.CipherChunks)
+	gcm.Assert(circuit.Key, circuit.Iv, circuit.ChunkIndex, circuit.PlainChunks, circuit.CipherChunks)
 
 	return nil
 }
 
 type AES interface {
-	Encrypt(key [32]frontend.Variable, pt [16]frontend.Variable) [16]frontend.Variable
+	Encrypt(key [32]uints.U8, pt [16]uints.U8) [16]uints.U8
 }
 
 func NewGCM256(api frontend.API, aes AES) GCM256 {
@@ -66,7 +67,7 @@ type GCM256 struct {
 }
 
 // aes gcm encryption
-func (gcm *GCM256) Assert256(key [32]frontend.Variable, iv [12]frontend.Variable, chunkIndex frontend.Variable, plaintext, ciphertext []frontend.Variable) {
+func (gcm *GCM256) Assert(key [32]uints.U8, iv [12]uints.U8, chunkIndex frontend.Variable, plaintext, ciphertext []uints.U8) {
 
 	inputSize := len(plaintext)
 	numberBlocks := int(inputSize / 16)
@@ -76,29 +77,29 @@ func (gcm *GCM256) Assert256(key [32]frontend.Variable, iv [12]frontend.Variable
 		idx := gcm.api.Add(chunkIndex, frontend.Variable(epoch))
 		eIndex := epoch * 16
 
-		var ptBlock [16]frontend.Variable
-		var ctBlock [16]frontend.Variable
+		var ptBlock [16]uints.U8
+		var ctBlock [16]uints.U8
 
 		for j := 0; j < 16; j++ {
 			ptBlock[j] = plaintext[eIndex+j]
 			ctBlock[j] = ciphertext[eIndex+j]
 		}
 
-		ivCounter := gcm.GetIV256(iv, idx)
+		ivCounter := gcm.GetIV(iv, idx)
 		intermediate := gcm.aes.Encrypt(key, ivCounter)
-		ct := gcm.Xor16256(intermediate, ptBlock)
+		ct := gcm.Xor16(intermediate, ptBlock)
 
 		// check ciphertext to plaintext constraints
 		for i := 0; i < 16; i++ {
-			gcm.api.AssertIsEqual(ctBlock[i], ct[i])
+			gcm.api.AssertIsEqual(ctBlock[i].Val, ct[i].Val)
 		}
 	}
 }
 
 // required for aes_gcm
-func (gcm *GCM256) GetIV256(nonce [12]frontend.Variable, ctr frontend.Variable) [16]frontend.Variable {
+func (gcm *GCM256) GetIV(nonce [12]uints.U8, ctr frontend.Variable) [16]uints.U8 {
 
-	var out [16]frontend.Variable
+	var out [16]uints.U8
 	var i int
 	for i = 0; i < len(nonce); i++ {
 		out[i] = nonce[i]
@@ -108,7 +109,7 @@ func (gcm *GCM256) GetIV256(nonce [12]frontend.Variable, ctr frontend.Variable) 
 	for j := 3; j >= 0; j-- {
 		start := 8 * j
 		// little endian order chunk parsing from back to front
-		out[remain] = gcm.api.FromBinary(bits[start : start+8]...)
+		out[remain] = uints.U8{Val: gcm.api.FromBinary(bits[start : start+8]...)}
 		remain += 1
 	}
 
@@ -116,16 +117,15 @@ func (gcm *GCM256) GetIV256(nonce [12]frontend.Variable, ctr frontend.Variable) 
 }
 
 // required for plaintext xor encrypted counter blocks
-func (gcm *GCM256) Xor16256(a [16]frontend.Variable, b [16]frontend.Variable) [16]frontend.Variable {
-
-	var out [16]frontend.Variable
+func (gcm *GCM256) Xor16(a [16]uints.U8, b [16]uints.U8) [16]uints.U8 {
+	var out [16]uints.U8
 	for i := 0; i < 16; i++ {
-		out[i] = gcm.variableXor256(a[i], b[i], 8)
+		out[i] = uints.U8{Val: gcm.variableXor(a[i].Val, b[i].Val, 8)}
 	}
 	return out
 }
 
-func (gcm *GCM256) variableXor256(a frontend.Variable, b frontend.Variable, size int) frontend.Variable {
+func (gcm *GCM256) variableXor(a frontend.Variable, b frontend.Variable, size int) frontend.Variable {
 	bitsA := gcm.api.ToBinary(a, size)
 	bitsB := gcm.api.ToBinary(b, size)
 	x := make([]frontend.Variable, size)
@@ -135,7 +135,7 @@ func (gcm *GCM256) variableXor256(a frontend.Variable, b frontend.Variable, size
 	return gcm.api.FromBinary(x...)
 }
 
-func TestAESGCM256Circuit(t *testing.T) {
+func Test_AESGCM256_Circuit(t *testing.T) {
 
 	source := rand.NewSource(time.Now().UnixNano())
 	rand := rand.New(source)
@@ -152,65 +152,47 @@ func TestAESGCM256Circuit(t *testing.T) {
 		py,
 	}
 	RawKey := Pub.RawBytes()
-	//m := RawKey[:]
+	m := RawKey[:]
+	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x01}
 	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D}
 	//m := []byte{0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34}
-	m := []byte{0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34, 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34}
-	M_bytes := make([]frontend.Variable, len(m))
+	//m := []byte{0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34, 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34}
+	M_bytes := make([]uints.U8, len(m))
 	for i := 0; i < len(m); i++ {
-		M_bytes[i] = m[i]
+		M_bytes[i] = uints.U8{Val: m[i]}
 	}
 
 	hasher := sha3.New256()
 	hasher.Write(RawKey[:])
-	//expected := hasher.Sum(nil)
-	expected := [32]byte{0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81, 0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4}
-	keyBytes := [32]frontend.Variable{}
+	expected := hasher.Sum(nil)
+	//expected := [32]byte{0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81, 0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4}
+	keyBytes := [32]uints.U8{}
 	for i := 0; i < len(keyBytes); i++ {
-		keyBytes[i] = expected[i]
+		keyBytes[i] = uints.U8{Val: expected[i]}
 	}
-
 	ciphertext, nonce := AesGcmEncrypt(expected[:], m)
-	//iphertext = ciphertext[len(nonce):]
 	t.Logf("out aesencrypt,m:%x", m)
 	t.Logf("out aesencrypt,ciphertext:%x", ciphertext)
 	t.Logf("out aesencrypt,nonce:%x", nonce)
-	Ciphertext_bytes := make([]frontend.Variable, len(ciphertext))
+	Ciphertext_bytes := make([]uints.U8, len(ciphertext))
 	for i := 0; i < len(ciphertext); i++ {
-		Ciphertext_bytes[i] = ciphertext[i]
+		Ciphertext_bytes[i] = uints.U8{Val: ciphertext[i]}
 	}
-	nonce_bytes := [12]frontend.Variable{}
+	nonce_bytes := [12]uints.U8{}
 	for i := 0; i < len(nonce); i++ {
-		nonce_bytes[i] = nonce[i]
+		nonce_bytes[i] = uints.U8{Val: nonce[i]}
 	}
-
-	/*	var ChunkIndex int
-		if len(ciphertext)%16 == 0 {
-			ChunkIndex = len(ciphertext) / 16
-		} else {
-			ChunkIndex = len(ciphertext)/16 + 1
-		}*/
-	var ChunkIndex int
-	ChunkIndex |= int(0) << 24
-	ChunkIndex |= int(1) << 31
-	/*	ChunkIndex |= int(nonce[0])
-		ChunkIndex |= int(nonce[1]) << 8
-		ChunkIndex |= int(nonce[2]) << 16
-		ChunkIndex |= int(nonce[3]) << 24
-		ChunkIndex |= 1*/
 	circuit := GCM256Wrapper{
-		PlainChunks:  make([]frontend.Variable, len(M_bytes)),
-		CipherChunks: make([]frontend.Variable, len(Ciphertext_bytes)),
+		PlainChunks:  make([]uints.U8, len(M_bytes)),
+		CipherChunks: make([]uints.U8, len(Ciphertext_bytes)),
 	}
 	witness := GCM256Wrapper{
-		Key:         keyBytes,
-		PlainChunks: M_bytes,
-		Iv:          nonce_bytes,
-		ChunkIndex:  2,
-		//ChunkIndex:   ChunkIndex,
+		Key:          keyBytes,
+		PlainChunks:  M_bytes,
+		Iv:           nonce_bytes,
+		ChunkIndex:   2,
 		CipherChunks: Ciphertext_bytes,
 	}
-
 	assert := test.NewAssert(t)
 	err = test.IsSolved(&circuit, &witness, ecc.BN254.ScalarField())
 	assert.NoError(err)

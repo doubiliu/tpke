@@ -36,7 +36,7 @@ func doMPCSetUp(ccs constraint.ConstraintSystem) (pk groth16.ProvingKey, vk grot
 	const (
 		nContributionsPhase1 = 3
 		nContributionsPhase2 = 3
-		power                = 20 //19 //2^9 元素个数
+		power                = 21 //19 //2^9 元素个数
 	)
 
 	initPhase1 := mpcsetup.InitPhase1(power)
@@ -178,24 +178,27 @@ type MixEncryptionTest[T1, S1, T2, S2 emulated.FieldParams] struct {
 	Pub    sw_emulated.AffinePoint[T1] `gnark:",public"`
 	RPub   sw_emulated.AffinePoint[T1]
 
-	PlainChunks  []uints.U8
+	PlainChunks  []frontend.Variable
 	Iv           [12]frontend.Variable `gnark:",public"`
 	ChunkIndex   frontend.Variable     `gnark:",public"`
-	CipherChunks []uints.U8            `gnark:",public"`
+	CipherChunks []frontend.Variable   `gnark:",public"`
 
 	SmallFi emulated.Element[S2]
 	Fi      sw_emulated.AffinePoint[T2] `gnark:",public"`
 }
 
 func (c *MixEncryptionTest[T1, S1, T2, S2]) Define(api frontend.API) error {
-	MBytes := make([]frontend.Variable, len(c.PlainChunks))
+	PlainChunksBytes := make([]uints.U8, len(c.PlainChunks))
 	for i := 0; i < len(c.PlainChunks); i++ {
-		MBytes[i] = c.PlainChunks[i]
+		PlainChunksBytes[i] = uints.U8{Val: c.PlainChunks[i]}
 	}
-
-	CiphertextBytes := make([]frontend.Variable, len(c.CipherChunks))
+	CiphertextBytes := make([]uints.U8, len(c.CipherChunks))
 	for i := 0; i < len(c.CipherChunks); i++ {
-		CiphertextBytes[i] = c.CipherChunks[i]
+		CiphertextBytes[i] = uints.U8{Val: c.CipherChunks[i]}
+	}
+	IV := [12]uints.U8{}
+	for i := 0; i < len(c.Iv); i++ {
+		IV[i] = uints.U8{Val: c.Iv[i]}
 	}
 
 	cr, err := sw_emulated.New[T1, S1](api, sw_emulated.GetCurveParams[T1]())
@@ -218,11 +221,11 @@ func (c *MixEncryptionTest[T1, S1, T2, S2]) Define(api frontend.API) error {
 	cr.AssertIsEqual(RPub, &c.RPub)
 	api.Println("RPub =rPub check ok")
 	//generate key=hash(RPub)
-	uapi, err := uints.New[uints.U64](api)
 	nbBits := 8 * ((fp.Modulus().BitLen() + 7) / 8)
 	rawRpub := make([]uints.U8, 2*nbBits)
-	for i := range cr.MarshalG1(c.RPub) {
-		rawRpub[i] = uapi.ByteValueOf(cr.MarshalG1(c.RPub)[i])
+	raw := cr.MarshalG1(c.RPub)
+	for i := range raw {
+		rawRpub[i] = uints.U8{Val: raw[i]}
 	}
 	hasher, err := zksha3.New256(api)
 	if err != nil {
@@ -230,7 +233,7 @@ func (c *MixEncryptionTest[T1, S1, T2, S2]) Define(api frontend.API) error {
 	}
 	hasher.Write(rawRpub)
 	expected := hasher.Sum()
-	key := [32]frontend.Variable{}
+	key := [32]uints.U8{}
 	for j := range key {
 		key[j] = expected[j]
 	}
@@ -247,9 +250,8 @@ func (c *MixEncryptionTest[T1, S1, T2, S2]) Define(api frontend.API) error {
 	//check aes process
 	aes := NewAES256(api)
 	gcm := NewGCM256(api, &aes)
-	gcm.Assert256(key, c.Iv, c.ChunkIndex, MBytes, CiphertextBytes)
+	gcm.Assert(key, IV, c.ChunkIndex, PlainChunksBytes, CiphertextBytes)
 	api.Println("aes check ok")
-
 	//check smallFi==m
 	f, err := emulated.NewField[S2](api)
 	if err != nil {
@@ -257,8 +259,8 @@ func (c *MixEncryptionTest[T1, S1, T2, S2]) Define(api frontend.API) error {
 	}
 	smallFiBits := f.ToBits(&c.SmallFi)
 	var plainBits []frontend.Variable
-	for i := range c.PlainChunks {
-		chunkBits := bits.ToBinary(api, c.PlainChunks[len(c.PlainChunks)-i-1].Val, bits.WithNbDigits(8))
+	for i := range PlainChunksBytes {
+		chunkBits := bits.ToBinary(api, PlainChunksBytes[len(PlainChunksBytes)-i-1].Val, bits.WithNbDigits(8))
 		plainBits = append(plainBits, chunkBits...)
 	}
 	if len(plainBits) != len(smallFiBits) {
@@ -299,7 +301,15 @@ func TestMixEncryption(t *testing.T) {
 	RPub.ScalarMultiplication(&Pub, SmallR)
 	RawRpub := RPub.RawBytes()
 	//generator key=hash(RPub)
-	key := RawRpub[:]
+	nbBytes := 2 * fr_secp.Bytes
+	key := make([]byte, nbBytes*8)
+	for i := 0; i < nbBytes; i++ {
+		for j := 0; j < 8; j++ {
+			key[i*8+j] = (RawRpub[i] >> (7 - j)) & 1
+		}
+	}
+	t.Logf("out :,Rpub:%x", RPub.X.Bytes())
+	t.Logf("out :,RawRpub:%x", key)
 	hasher := sha3.New256()
 	hasher.Write(key)
 	expected := hasher.Sum(nil)
@@ -307,29 +317,35 @@ func TestMixEncryption(t *testing.T) {
 	for i := 0; i < len(expected); i++ {
 		keyBytes[i] = expected[i]
 	}
+	t.Logf("out :,key:%x", expected)
 	//message
 	var fi fr_bls12381.Element
 	_, _ = fi.SetRandom()
 	SmallFi := new(big.Int)
 	fi.BigInt(SmallFi)
 
-	//m := SmallFi.Bytes()
 	var m [32]byte
 	SmallFi.FillBytes(m[:])
 	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
 	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x01}
+	PlainChunksBytes := make([]frontend.Variable, len(m))
+	for i := 0; i < len(m); i++ {
+		PlainChunksBytes[i] = m[i]
+	}
 	//aes
 	ciphertext, nonce := AesGcmEncrypt(expected, m[:])
-	/*	var ChunkIndex int
-		if len(ciphertext)%16 == 0 {
-			ChunkIndex = len(ciphertext) / 16
-		} else {
-			ChunkIndex = len(ciphertext)/16 + 1
-		}*/
+	Ciphertext_bytes := make([]frontend.Variable, len(ciphertext))
+	for i := 0; i < len(ciphertext); i++ {
+		Ciphertext_bytes[i] = ciphertext[i]
+	}
+
 	nonceBytes := [12]frontend.Variable{}
 	for i := 0; i < len(nonce); i++ {
 		nonceBytes[i] = nonce[i]
 	}
+	t.Logf("out :,PlainChunks:%x", m)
+	t.Logf("out :,ciphertext:%x", ciphertext)
+	t.Logf("out :,nonce:%x", nonce)
 	//Fi=fiG
 	_, _, g12381, _ := bls12381.Generators()
 	//var fi big.Int
@@ -338,8 +354,8 @@ func TestMixEncryption(t *testing.T) {
 	t.Logf("create Fi ok ")
 	//proof
 	circuit := MixEncryptionTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr, emulated.BLS12381Fp, emulated.BLS12381Fr]{
-		PlainChunks:  make([]uints.U8, len(m)),
-		CipherChunks: make([]uints.U8, len(ciphertext)),
+		PlainChunks:  make([]frontend.Variable, len(PlainChunksBytes)),
+		CipherChunks: make([]frontend.Variable, len(Ciphertext_bytes)),
 	}
 	witness := MixEncryptionTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr, emulated.BLS12381Fp, emulated.BLS12381Fr]{
 		SmallR: emulated.ValueOf[emulated.Secp256k1Fr](SmallR),
@@ -355,10 +371,10 @@ func TestMixEncryption(t *testing.T) {
 			X: emulated.ValueOf[emulated.Secp256k1Fp](RPub.X),
 			Y: emulated.ValueOf[emulated.Secp256k1Fp](RPub.Y),
 		},
-		PlainChunks:  uints.NewU8Array(m[:]),
+		PlainChunks:  PlainChunksBytes,
 		Iv:           nonceBytes,
 		ChunkIndex:   2,
-		CipherChunks: uints.NewU8Array(ciphertext),
+		CipherChunks: Ciphertext_bytes,
 
 		SmallFi: emulated.ValueOf[emulated.BLS12381Fr](SmallFi),
 		Fi: sw_emulated.AffinePoint[emulated.BLS12381Fp]{
@@ -372,7 +388,7 @@ func TestMixEncryption(t *testing.T) {
 }
 
 func TestMixEncryptionByMPC(t *testing.T) {
-	//generator R=rg
+	//check BigR=rG
 	_, g := secp256k1.Generators()
 	var r fr_secp.Element
 	_, _ = r.SetRandom()
@@ -398,9 +414,17 @@ func TestMixEncryptionByMPC(t *testing.T) {
 	//generator RPub=r*PublicKey
 	var RPub secp256k1.G1Affine
 	RPub.ScalarMultiplication(&Pub, SmallR)
-	RawRPub := RPub.RawBytes()
-	//generator key=hash(rPub)
-	key := RawRPub[:]
+	RawRpub := RPub.RawBytes()
+	//generator key=hash(RPub)
+	nbBytes := 2 * fr_secp.Bytes
+	key := make([]byte, nbBytes*8)
+	for i := 0; i < nbBytes; i++ {
+		for j := 0; j < 8; j++ {
+			key[i*8+j] = (RawRpub[i] >> (7 - j)) & 1
+		}
+	}
+	t.Logf("out :,Rpub:%x", RPub.X.Bytes())
+	t.Logf("out :,RawRpub:%x", key)
 	hasher := sha3.New256()
 	hasher.Write(key)
 	expected := hasher.Sum(nil)
@@ -408,16 +432,47 @@ func TestMixEncryptionByMPC(t *testing.T) {
 	for i := 0; i < len(expected); i++ {
 		keyBytes[i] = expected[i]
 	}
+	t.Logf("out :,key:%x", expected)
 	//message
-	m := []byte{0x01, 0x02}
-	ciphertext, nonce := AesGcmEncrypt(expected, m)
-	ChunkIndex := len(ciphertext)/16 + 1
+	var fi fr_bls12381.Element
+	_, _ = fi.SetRandom()
+	SmallFi := new(big.Int)
+	fi.BigInt(SmallFi)
+
+	var m [32]byte
+	SmallFi.FillBytes(m[:])
+	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
+	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x01}
+	PlainChunksBytes := make([]frontend.Variable, len(m))
+	for i := 0; i < len(m); i++ {
+		PlainChunksBytes[i] = m[i]
+	}
+	//aes
+	ciphertext, nonce := AesGcmEncrypt(expected, m[:])
+	Ciphertext_bytes := make([]frontend.Variable, len(ciphertext))
+	for i := 0; i < len(ciphertext); i++ {
+		Ciphertext_bytes[i] = ciphertext[i]
+	}
+
 	nonceBytes := [12]frontend.Variable{}
 	for i := 0; i < len(nonce); i++ {
 		nonceBytes[i] = nonce[i]
 	}
+	t.Logf("out :,PlainChunks:%x", m)
+	t.Logf("out :,ciphertext:%x", ciphertext)
+	t.Logf("out :,nonce:%x", nonce)
+	//Fi=fiG
+	_, _, g12381, _ := bls12381.Generators()
+	//var fi big.Int
+	var Fi bls12381.G1Affine
+	Fi.ScalarMultiplication(&g12381, SmallFi)
+	t.Logf("create Fi ok ")
+
 	//proof
-	circuit := MixEncryptionTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr, emulated.BLS12381Fp, emulated.BLS12381Fr]{}
+	circuit := MixEncryptionTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr, emulated.BLS12381Fp, emulated.BLS12381Fr]{
+		PlainChunks:  make([]frontend.Variable, len(PlainChunksBytes)),
+		CipherChunks: make([]frontend.Variable, len(Ciphertext_bytes)),
+	}
 	css, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &circuit)
 	if err != nil {
 		t.Fatalf(err.Error())
@@ -443,10 +498,16 @@ func TestMixEncryptionByMPC(t *testing.T) {
 			X: emulated.ValueOf[emulated.Secp256k1Fp](RPub.X),
 			Y: emulated.ValueOf[emulated.Secp256k1Fp](RPub.Y),
 		},
-		PlainChunks:  uints.NewU8Array(m),
+		PlainChunks:  PlainChunksBytes,
 		Iv:           nonceBytes,
-		ChunkIndex:   ChunkIndex,
-		CipherChunks: uints.NewU8Array(ciphertext),
+		ChunkIndex:   2,
+		CipherChunks: Ciphertext_bytes,
+
+		SmallFi: emulated.ValueOf[emulated.BLS12381Fr](SmallFi),
+		Fi: sw_emulated.AffinePoint[emulated.BLS12381Fp]{
+			X: emulated.ValueOf[emulated.BLS12381Fp](Fi.X),
+			Y: emulated.ValueOf[emulated.BLS12381Fp](Fi.Y),
+		},
 	}
 	//计算witness
 	witness, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
