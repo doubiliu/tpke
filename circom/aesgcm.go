@@ -6,7 +6,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"fmt"
 	"io"
 )
 
@@ -16,7 +15,6 @@ func AesGcmEncrypt(key []byte, plaintext []byte) (ciphertext, nonce []byte) {
 	if err != nil {
 		panic(err.Error())
 	}
-
 	// Never use more than 2^32 random nonces with a given key because of the risk of a repeat.
 	nonce = make([]byte, 12)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -29,9 +27,6 @@ func AesGcmEncrypt(key []byte, plaintext []byte) (ciphertext, nonce []byte) {
 	}
 
 	ciphertext = aesgcm.Seal(nil, nonce, plaintext, nil)
-	/*	fmt.Printf("Ciphertext: %x\n", ciphertext)
-		fmt.Printf("Nonce: %x\n", nonce)*/
-
 	return
 }
 
@@ -41,19 +36,14 @@ func AesGcmDecrypt(key, ciphertext, nonce []byte) (plaintext string) {
 	if err != nil {
 		panic(err.Error())
 	}
-
 	aesgcm, err := cipher.NewGCM(block)
 	if err != nil {
 		panic(err.Error())
 	}
-
 	plaintextBytes, err := aesgcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		panic(err.Error())
 	}
-
 	plaintext = string(plaintextBytes)
-	fmt.Printf("%s\n", plaintext)
-
 	return
 }

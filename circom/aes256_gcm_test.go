@@ -42,14 +42,10 @@ type GCM256Wrapper struct {
 
 // Define declares the circuit's constraints
 func (circuit *GCM256Wrapper) Define(api frontend.API) error {
-
 	aes := NewAES256(api)
-
 	gcm := NewGCM256(api, &aes)
-
 	// verify aes gcm of chunks
 	gcm.Assert(circuit.Key, circuit.Iv, circuit.ChunkIndex, circuit.PlainChunks, circuit.CipherChunks)
-
 	return nil
 }
 
@@ -88,7 +84,6 @@ func (gcm *GCM256) Assert(key [32]uints.U8, iv [12]uints.U8, chunkIndex frontend
 		ivCounter := gcm.GetIV(iv, idx)
 		intermediate := gcm.aes.Encrypt(key, ivCounter)
 		ct := gcm.Xor16(intermediate, ptBlock)
-
 		// check ciphertext to plaintext constraints
 		for i := 0; i < 16; i++ {
 			gcm.api.AssertIsEqual(ctBlock[i].Val, ct[i].Val)
@@ -153,27 +148,18 @@ func Test_AESGCM256_Circuit(t *testing.T) {
 	}
 	RawKey := Pub.RawBytes()
 	m := RawKey[:]
-	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x01}
-	//m := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D}
-	//m := []byte{0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34}
-	//m := []byte{0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34, 0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07, 0x34}
 	M_bytes := make([]uints.U8, len(m))
 	for i := 0; i < len(m); i++ {
 		M_bytes[i] = uints.U8{Val: m[i]}
 	}
-
 	hasher := sha3.New256()
 	hasher.Write(RawKey[:])
 	expected := hasher.Sum(nil)
-	//expected := [32]byte{0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81, 0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4}
 	keyBytes := [32]uints.U8{}
 	for i := 0; i < len(keyBytes); i++ {
 		keyBytes[i] = uints.U8{Val: expected[i]}
 	}
 	ciphertext, nonce := AesGcmEncrypt(expected[:], m)
-	t.Logf("out aesencrypt,m:%x", m)
-	t.Logf("out aesencrypt,ciphertext:%x", ciphertext)
-	t.Logf("out aesencrypt,nonce:%x", nonce)
 	Ciphertext_bytes := make([]uints.U8, len(ciphertext))
 	for i := 0; i < len(ciphertext); i++ {
 		Ciphertext_bytes[i] = uints.U8{Val: ciphertext[i]}
